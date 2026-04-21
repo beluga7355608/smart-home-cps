@@ -1,0 +1,4 @@
+# 依赖：
+# Flask + SocketIO 用于 Web 可视化与实时推送
+Flask>=2.0
+Flask-SocketIO>=5.0
