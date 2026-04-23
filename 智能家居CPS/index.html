@@ -122,6 +122,13 @@
 
 <body>
     <h2>设备仪表盘</h2>
+    <div id="serverInfo" style="margin:6px 0;color:#444">访问地址：加载中...</div>
+    <div style="margin:6px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <label>访问口令：</label>
+        <input id="accessToken" type="password" placeholder="请输入口令" style="width:160px" />
+        <button onclick="saveAccessToken()">保存口令</button>
+        <span id="tokenStatus" style="color:#666">未设置</span>
+    </div>
     <div class="layout">
         <div class="panel">
             <h3>设备列表</h3>
@@ -196,6 +203,13 @@
     <script>
         const charts = {}; // device_id -> {chart, data}
         const deviceState = {}; // device_id -> device info
+        const tokenInput = document.getElementById('accessToken');
+        const tokenStatus = document.getElementById('tokenStatus');
+        let accessToken = localStorage.getItem('cps_access_token') || '';
+        if (accessToken) {
+            tokenInput.value = accessToken;
+            tokenStatus.textContent = '已设置';
+        }
         const COMMAND_OPTIONS = {
             light: [
                 { value: 'turn_on_light', label: '开灯' },
@@ -332,14 +346,14 @@
             const input = document.getElementById('cmd_' + devId);
             const cmd = input.value;
             if (!cmd) return alert('请选择命令');
-            await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: devId, cmd }) });
-            alert('命令已下发');
+            const r = await authPost('/api/command', { device_id: devId, cmd });
+            if (r && r.ok) alert('命令已下发');
             input.selectedIndex = 0;
         }
 
         async function applyScene(scene) {
-            await fetch('/api/scene/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scene }) });
-            alert('已应用场景：' + scene);
+            const r = await authPost('/api/scene/apply', { scene });
+            if (r && r.ok) alert('已应用场景：' + scene);
         }
 
         async function setAlarmEnabled(enabled) {
@@ -348,18 +362,10 @@
             const cmd = enabled ? 'alarm_on' : 'alarm_off';
             const tasks = [];
             if (doorId) {
-                tasks.push(fetch('/api/command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ device_id: doorId, cmd })
-                }));
+                tasks.push(authPost('/api/command', { device_id: doorId, cmd }));
             }
             if (smokeId) {
-                tasks.push(fetch('/api/command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ device_id: smokeId, cmd })
-                }));
+                tasks.push(authPost('/api/command', { device_id: smokeId, cmd }));
             }
             if (tasks.length === 0) return alert('未找到门磁/烟雾设备');
             await Promise.all(tasks);
@@ -376,12 +382,8 @@
         async function triggerAlarm(type) {
             const devId = findFirstDeviceIdByType(type);
             if (!devId) return alert('未找到设备类型：' + type);
-            await fetch('/api/alarm/trigger', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ device_id: devId })
-            });
-            alert('已触发' + (type === 'door' ? '门磁' : '烟雾') + '告警');
+            const r = await authPost('/api/alarm/trigger', { device_id: devId });
+            if (r && r.ok) alert('已触发' + (type === 'door' ? '门磁' : '烟雾') + '告警');
         }
 
         function exportAlarms() {
@@ -477,6 +479,59 @@
         let pollingTimer = null;
         let pollingForced = false;
         const pollingMetrics = { count: 0, avgLatencyMs: 0, maxLatencyMs: 0 };
+
+        function saveAccessToken() {
+            accessToken = (tokenInput.value || '').trim();
+            if (accessToken) {
+                localStorage.setItem('cps_access_token', accessToken);
+                tokenStatus.textContent = '已设置';
+            } else {
+                localStorage.removeItem('cps_access_token');
+                tokenStatus.textContent = '未设置';
+            }
+        }
+
+        function authHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            if (accessToken) headers['X-Access-Token'] = accessToken;
+            return headers;
+        }
+
+        async function authPost(url, body) {
+            const r = await fetch(url, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+            if (!r.ok) {
+                let msg = '';
+                try {
+                    const data = await r.json();
+                    msg = data && data.msg ? data.msg : '';
+                } catch (e) {
+                    msg = '';
+                }
+                if (r.status === 401) {
+                    alert('访问口令错误或未设置');
+                } else if (msg) {
+                    alert(msg);
+                } else {
+                    alert('请求失败');
+                }
+            }
+            return r;
+        }
+
+        async function loadServerInfo() {
+            const el = document.getElementById('serverInfo');
+            try {
+                const r = await fetch('/api/server-info');
+                const info = await r.json();
+                const port = info.port || 5000;
+                const ips = Array.isArray(info.ips) ? info.ips : [];
+                const urls = ips.map(ip => `http://${ip}:${port}`).join(' / ');
+                const fallback = window.location.origin;
+                el.textContent = '访问地址：' + (urls || fallback);
+            } catch (e) {
+                el.textContent = '访问地址：' + window.location.origin;
+            }
+        }
 
         function loadScript(url) {
             return new Promise((resolve) => {
@@ -626,6 +681,7 @@
             }, 3000);
         }
 
+        loadServerInfo();
         initRealtime();
     </script>
 </body>

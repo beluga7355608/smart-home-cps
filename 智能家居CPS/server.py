@@ -1,4 +1,5 @@
 import socket
+import os
 import threading
 import json
 import time
@@ -8,6 +9,7 @@ from flask_socketio import SocketIO
 
 DISCOVERY_PORT = 10000
 DATA_PORT = 10001
+ACCESS_TOKEN = os.environ.get('CPS_ACCESS_TOKEN', 'cps1234')
 
 devices = {}  # device_id -> {type, ip, last_seen, last_value, pending_cmd, last_cmd}
 DB_PATH = 'cps_history.db'
@@ -232,6 +234,37 @@ def init_db():
     conn.close()
 
 
+def require_access_token():
+    if not ACCESS_TOKEN:
+        return None
+    token = request.headers.get('X-Access-Token') or request.args.get('token')
+    if not token:
+        obj = request.get_json(silent=True) or {}
+        token = obj.get('token')
+    if token != ACCESS_TOKEN:
+        return jsonify({'status': 'error', 'msg': 'invalid access token'}), 401
+    return None
+
+
+def get_local_ips():
+    ips = set()
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if ip and not ip.startswith('127.'):
+                ips.add(ip)
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    return sorted(ips)
+
+
 def insert_reading(device_id, device_type, value, ts):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -246,6 +279,11 @@ def insert_reading(device_id, device_type, value, ts):
 @app.route('/')
 def index():
     return send_from_directory('.', 'index.html')
+
+
+@app.route('/api/server-info')
+def api_server_info():
+    return jsonify({'port': 5000, 'ips': get_local_ips()})
 
 
 @app.route('/api/devices')
@@ -268,6 +306,9 @@ def api_devices():
 
 @app.route('/api/command', methods=['POST'])
 def api_command():
+    deny = require_access_token()
+    if deny:
+        return deny
     obj = request.get_json() or {}
     dev_id = obj.get('device_id')
     cmd = obj.get('cmd')
@@ -302,6 +343,9 @@ def api_command():
 
 @app.route('/api/alarm/trigger', methods=['POST'])
 def api_alarm_trigger():
+    deny = require_access_token()
+    if deny:
+        return deny
     obj = request.get_json() or {}
     dev_id = obj.get('device_id')
     if not dev_id:
@@ -386,6 +430,9 @@ def api_scenes():
 
 @app.route('/api/scene/apply', methods=['POST'])
 def api_scene_apply():
+    deny = require_access_token()
+    if deny:
+        return deny
     obj = request.get_json() or {}
     scene = obj.get('scene')
     if scene not in SCENES:

@@ -1,0 +1,5 @@
+1776943684 {'version': 4, 'ihl': 20, 'total_len': 40, 'id': 49540, 'flags': 2, 'frag_offset': 0, 'ttl': 128, 'protocol': 6, 'checksum': 44307, 'src': '198.18.0.1', 'dst': '198.18.0.18'}
+1776943684 {'version': 4, 'ihl': 20, 'total_len': 40, 'id': 0, 'flags': 2, 'frag_offset': 0, 'ttl': 64, 'protocol': 6, 'checksum': 44696, 'src': '198.18.0.18', 'dst': '198.18.0.1'}
+1776943690 {'version': 4, 'ihl': 20, 'total_len': 70, 'id': 2567, 'flags': 0, 'frag_offset': 0, 'ttl': 128, 'protocol': 17, 'checksum': 42104, 'src': '198.18.0.1', 'dst': '198.18.0.2'}
+1776943690 {'version': 4, 'ihl': 20, 'total_len': 86, 'id': 20008, 'flags': 0, 'frag_offset': 0, 'ttl': 64, 'protocol': 17, 'checksum': 41031, 'src': '198.18.0.2', 'dst': '198.18.0.1'}
+1776943690 {'version': 4, 'ihl': 20, 'total_len': 52, 'id': 11960, 'flags': 2, 'frag_offset': 0, 'ttl': 128, 'protocol': 6, 'checksum': 16337, 'src': '198.18.0.1', 'dst': '198.18.0.21'}
