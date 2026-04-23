@@ -1,3 +1,4 @@
+import argparse
 import socket
 import json
 import threading
@@ -8,29 +9,49 @@ DISCOVERY_PORT = 10000
 DATA_PORT = 10001
 SIMULATE_DROP_RATE = 0.05
 MAX_RETRY = 2
+EXTRA_DELAY_MS = 0
+JITTER_MS = 0
+INTERVAL_MIN = 5
+INTERVAL_MAX = 10
 
-devices = [
-    {'device_id': 'temp01', 'type': 'temp'},
-    {'device_id': 'light01', 'type': 'light'},
-    {'device_id': 'door01', 'type': 'door'},
-    {'device_id': 'smoke01', 'type': 'smoke'},
-    {'device_id': 'plug01', 'type': 'plug'}
-]
-
-device_state = {
-    'temp01': {'cooler': 'off'},
-    'light01': {'light': 'off'},
-    'door01': {'door': 'closed', 'alarm': 'off'},
-    'smoke01': {'alarm': 'off'},
-    'plug01': {'power': 'on'}
-}
-
-seq_state = {d['device_id']: 0 for d in devices}
+devices = []
+device_state = {}
+seq_state = {}
 
 
 def calc_checksum(device_id, dev_type, value, seq, send_ts):
     raw = f"{device_id}|{dev_type}|{value}|{seq}|{send_ts}"
     return sum(raw.encode('utf-8')) % 256
+
+
+def build_devices(num_devices, types):
+    built = []
+    type_counts = {t: 0 for t in types}
+    for i in range(num_devices):
+        t = types[i % len(types)]
+        type_counts[t] += 1
+        dev_id = f"{t}{type_counts[t]:02d}"
+        built.append({'device_id': dev_id, 'type': t})
+    return built
+
+
+def init_device_state(dev_list):
+    state = {}
+    for d in dev_list:
+        dev_id = d['device_id']
+        if d['type'] == 'temp':
+            state[dev_id] = {'cooler': 'off'}
+        elif d['type'] == 'light':
+            state[dev_id] = {'light': 'off'}
+        elif d['type'] == 'door':
+            state[dev_id] = {'door': 'closed', 'alarm': 'off'}
+        elif d['type'] == 'smoke':
+            state[dev_id] = {'alarm': 'off'}
+        elif d['type'] == 'plug':
+            state[dev_id] = {'power': 'on'}
+        else:
+            state[dev_id] = {}
+    return state
 
 def send_discovery(dev):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -65,7 +86,7 @@ def report_loop(dev):
             # 模拟链路丢包（便于展示丢包率统计）
             if random.random() < SIMULATE_DROP_RATE:
                 print(f"[DROP] {dev['device_id']} seq={seq} dropped before send")
-                time.sleep(5 + random.random() * 5)
+                time.sleep(INTERVAL_MIN + random.random() * max(0.0, INTERVAL_MAX - INTERVAL_MIN))
                 continue
 
             send_ts = time.time()
@@ -81,6 +102,9 @@ def report_loop(dev):
             sent = False
             for attempt in range(MAX_RETRY + 1):
                 try:
+                    if EXTRA_DELAY_MS > 0 or JITTER_MS > 0:
+                        jitter = random.uniform(0, JITTER_MS)
+                        time.sleep((EXTRA_DELAY_MS + jitter) / 1000.0)
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(5)
                     s.connect(('127.0.0.1', DATA_PORT))
@@ -101,7 +125,7 @@ def report_loop(dev):
                 print(f"[REPORT] {dev['device_id']} seq={seq} all retries failed")
         except Exception as e:
             print(f"[REPORT] {dev['device_id']} error: {e}")
-        time.sleep(5 + random.random() * 5)
+        time.sleep(INTERVAL_MIN + random.random() * max(0.0, INTERVAL_MAX - INTERVAL_MIN))
 
 def handle_command(device_id, raw):
     try:
@@ -138,9 +162,39 @@ def handle_command(device_id, raw):
     print(f"[RESP] {device_id} cmd={cmd} state={device_state.get(device_id)}")
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Device simulator')
+    parser.add_argument('--num-devices', type=int, default=5, help='total devices to simulate')
+    parser.add_argument('--types', type=str, default='temp,light,door,smoke,plug', help='device types list')
+    parser.add_argument('--drop-rate', type=float, default=SIMULATE_DROP_RATE, help='simulated drop rate (0-1)')
+    parser.add_argument('--delay-ms', type=int, default=EXTRA_DELAY_MS, help='extra fixed delay per send (ms)')
+    parser.add_argument('--jitter-ms', type=int, default=JITTER_MS, help='extra random delay (ms)')
+    parser.add_argument('--interval-min', type=float, default=INTERVAL_MIN, help='min interval seconds')
+    parser.add_argument('--interval-max', type=float, default=INTERVAL_MAX, help='max interval seconds')
+    parser.add_argument('--max-retry', type=int, default=MAX_RETRY, help='max retry attempts')
+    parser.add_argument('--seed', type=int, default=None, help='random seed for repeatability')
+    args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    SIMULATE_DROP_RATE = max(0.0, min(1.0, args.drop_rate))
+    EXTRA_DELAY_MS = max(0, args.delay_ms)
+    JITTER_MS = max(0, args.jitter_ms)
+    INTERVAL_MIN = max(0.1, args.interval_min)
+    INTERVAL_MAX = max(INTERVAL_MIN, args.interval_max)
+    MAX_RETRY = max(0, args.max_retry)
+
+    type_list = [t.strip() for t in args.types.split(',') if t.strip()]
+    if not type_list:
+        type_list = ['temp', 'light', 'door', 'smoke', 'plug']
+
+    devices = build_devices(max(1, args.num_devices), type_list)
+    device_state = init_device_state(devices)
+    seq_state = {d['device_id']: 0 for d in devices}
+
     for d in devices:
         threading.Thread(target=send_discovery, args=(d,), daemon=True).start()
         threading.Thread(target=report_loop, args=(d,), daemon=True).start()
-    print('[SIM] device simulator running. Ctrl-C to stop.')
+    print(f"[SIM] device simulator running. devices={len(devices)} drop={SIMULATE_DROP_RATE} delay={EXTRA_DELAY_MS}ms jitter={JITTER_MS}ms interval={INTERVAL_MIN}-{INTERVAL_MAX}s")
     while True:
         time.sleep(1)

@@ -14,6 +14,13 @@ DB_PATH = 'cps_history.db'
 alarms = []  # list of {ts, level, device_id, message}
 energy_stats = {}  # device_id -> {wh, last_ts}
 net_stats = {}  # device_id -> network KPIs
+perf_stats = {
+    'tcp_rx': 0,
+    'tcp_latency_ms_avg': 0.0,
+    'tcp_latency_samples': 0,
+    'tcp_latency_ms_max': 0.0,
+    'poll_requests': 0
+}
 ALLOWED_COMMANDS = {
     'turn_on_light',
     'turn_off_light',
@@ -87,6 +94,15 @@ def update_latency(stat, latency_ms):
     avg = stat['latency_ms_avg']
     stat['latency_ms_avg'] = (avg * n + latency_ms) / (n + 1)
     stat['latency_samples'] = n + 1
+
+
+def update_perf_latency(latency_ms):
+    n = perf_stats['tcp_latency_samples']
+    avg = perf_stats['tcp_latency_ms_avg']
+    perf_stats['tcp_latency_ms_avg'] = (avg * n + latency_ms) / (n + 1)
+    perf_stats['tcp_latency_samples'] = n + 1
+    if latency_ms > perf_stats['tcp_latency_ms_max']:
+        perf_stats['tcp_latency_ms_max'] = latency_ms
 
 
 def summarize_net_stats():
@@ -420,6 +436,29 @@ def api_netstats():
     return jsonify(summarize_net_stats())
 
 
+@app.route('/api/perf')
+def api_perf():
+    return jsonify({
+        'tcp_rx': perf_stats['tcp_rx'],
+        'tcp_latency_ms_avg': round(perf_stats['tcp_latency_ms_avg'], 2),
+        'tcp_latency_ms_max': round(perf_stats['tcp_latency_ms_max'], 2),
+        'poll_requests': perf_stats['poll_requests']
+    })
+
+
+@app.route('/api/poll')
+def api_poll():
+    perf_stats['poll_requests'] += 1
+    return jsonify({
+        'server_ts': time.time(),
+        'devices': list_devices(),
+        'alarms': alarms[-50:],
+        'energy': [{'device_id': k, 'wh': round(v.get('wh', 0), 2)} for k, v in energy_stats.items()],
+        'summary': api_summary().get_json(),
+        'netstats': summarize_net_stats()
+    })
+
+
 @app.route('/api/command-coverage')
 def api_command_coverage():
     return jsonify(command_coverage_report())
@@ -528,6 +567,7 @@ def apply_policy(dev_id, dev_type, value):
 
 def tcp_data_handler(conn, addr):
     try:
+        start_ts = time.time()
         data = conn.recv(4096)
         if not data:
             return
@@ -610,6 +650,8 @@ def tcp_data_handler(conn, addr):
         response['ack_seq'] = seq
         response['server_ts'] = now
         conn.sendall(json.dumps(response).encode('utf-8'))
+        perf_stats['tcp_rx'] += 1
+        update_perf_latency(max(0.0, (time.time() - start_ts) * 1000))
         socketio.emit('devices', list_devices())
         socketio.emit('reading', {'device_id': dev_id, 'type': dev_type, 'value': value, 'ts': ts})
         if dev_type in ('smoke', 'door') and len(alarms) > 0:

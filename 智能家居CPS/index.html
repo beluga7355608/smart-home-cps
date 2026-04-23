@@ -126,6 +126,13 @@
         <div class="panel">
             <h3>设备列表</h3>
             <div id="wsStatus" style="margin:6px 0;color:#666">WebSocket: 连接中...</div>
+            <div style="margin:6px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <label>轮询间隔(ms)：</label>
+                <input id="pollInterval" type="number" value="1000" min="200" step="100" style="width:100px" />
+                <button onclick="startPolling(true)">启用轮询实验</button>
+                <button onclick="stopPolling()">停止轮询实验</button>
+                <span id="pollStatus" style="color:#666">轮询：未启用</span>
+            </div>
             <div class="summary" id="summary">
                 <div class="card">设备总数: -</div>
                 <div class="card">在线设备: -</div>
@@ -180,6 +187,7 @@
             <div id="charts"></div>
             <div class="energy-list" id="energyList">能耗：暂无</div>
             <div class="net-list" id="netList">网络指标：暂无</div>
+            <div class="net-list" id="pollStats">轮询实验：暂无</div>
         </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -463,8 +471,12 @@
         }
 
         const wsStatus = document.getElementById('wsStatus');
+        const pollStatus = document.getElementById('pollStatus');
         let socket = null;
         let pollingStarted = false;
+        let pollingTimer = null;
+        let pollingForced = false;
+        const pollingMetrics = { count: 0, avgLatencyMs: 0, maxLatencyMs: 0 };
 
         function loadScript(url) {
             return new Promise((resolve) => {
@@ -506,6 +518,63 @@
             }, 3000);
         }
 
+        function updatePollingMetrics(latencyMs) {
+            pollingMetrics.count += 1;
+            const n = pollingMetrics.count;
+            pollingMetrics.avgLatencyMs = (pollingMetrics.avgLatencyMs * (n - 1) + latencyMs) / n;
+            if (latencyMs > pollingMetrics.maxLatencyMs) pollingMetrics.maxLatencyMs = latencyMs;
+        }
+
+        function renderPollStats() {
+            const el = document.getElementById('pollStats');
+            if (pollingMetrics.count === 0) {
+                el.textContent = '轮询实验：暂无';
+                return;
+            }
+            el.innerHTML = `<strong>轮询实验</strong><div>请求数: ${pollingMetrics.count}，平均时延: ${pollingMetrics.avgLatencyMs.toFixed(1)}ms，最大时延: ${pollingMetrics.maxLatencyMs.toFixed(1)}ms</div>`;
+        }
+
+        async function pollOnce() {
+            const start = Date.now();
+            try {
+                const r = await fetch('/api/poll');
+                const payload = await r.json();
+                const serverTs = payload.server_ts ? payload.server_ts * 1000 : Date.now();
+                const latency = Math.max(0, Date.now() - serverTs);
+                updatePollingMetrics(latency);
+                updateTable(payload.devices || []);
+                renderAlarms(payload.alarms || []);
+                renderEnergy(payload.energy || []);
+                renderSummary(payload.summary || { total_devices: 0, online_devices: 0, alarm_count: 0, energy_wh: 0, loss_rate: 0, latency_ms_avg: 0 });
+                renderNetStats(payload.netstats || { devices: [], aggregate: { total_rx: 0, total_lost: 0, total_bad_checksum: 0 } });
+                renderPollStats();
+            } catch (e) {
+                // 忽略轮询错误
+            } finally {
+                const elapsed = Date.now() - start;
+                if (elapsed > 0) {
+                    // 保留一次测量开销
+                }
+            }
+        }
+
+        function startPolling(forced) {
+            const intervalInput = document.getElementById('pollInterval');
+            const intervalMs = Math.max(200, parseInt(intervalInput.value || '1000', 10));
+            if (pollingTimer) clearInterval(pollingTimer);
+            pollingForced = !!forced;
+            pollStatus.textContent = `轮询：已启用（${intervalMs}ms）`;
+            pollOnce();
+            pollingTimer = setInterval(pollOnce, intervalMs);
+        }
+
+        function stopPolling() {
+            if (pollingTimer) clearInterval(pollingTimer);
+            pollingTimer = null;
+            pollingForced = false;
+            pollStatus.textContent = '轮询：未启用';
+        }
+
         async function initRealtime() {
             const clientOk = await ensureSocketIoClient();
             if (!clientOk || !window.io) {
@@ -530,11 +599,11 @@
                 wsStatus.textContent = 'WebSocket: 连接失败，启用轮询兜底';
                 startPollingFallback();
             });
-            socket.on('devices', data => updateTable(data));
-            socket.on('reading', msg => onReading(msg));
-            socket.on('alarm', msg => renderAlarms([msg]));
-            socket.on('energy', msg => renderEnergy(msg));
-            socket.on('netstats', msg => renderNetStats(msg));
+            socket.on('devices', data => { if (!pollingForced) updateTable(data); });
+            socket.on('reading', msg => { if (!pollingForced) onReading(msg); });
+            socket.on('alarm', msg => { if (!pollingForced) renderAlarms([msg]); });
+            socket.on('energy', msg => { if (!pollingForced) renderEnergy(msg); });
+            socket.on('netstats', msg => { if (!pollingForced) renderNetStats(msg); });
 
             // 兜底：若 WebSocket 断线，轮询设备列表
             setInterval(async () => {
